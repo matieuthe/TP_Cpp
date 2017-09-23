@@ -2,7 +2,7 @@
 #include <pthread.h> /* pthread functions and data structures */
 #include <unistd.h>
 
-#define MAX 3 //Nombre d'élément du tampon
+#define MAX 10 //Nombre d'élément du tampon
 #define NBTEST 25
 
 //Commande pour compiler
@@ -13,114 +13,204 @@ int tamp[MAX];
 int nbElements = 0; //nb element dans le tampon
 int posEcriture = 0; //Position de l'écriture
 int posLecture = 0; //Position de la lecture
+int enEcriture = 0;
+int enLecture = 0;
 pthread_cond_t consommerPossible = PTHREAD_COND_INITIALIZER;
 pthread_cond_t produirePossible = PTHREAD_COND_INITIALIZER;
 
-pthread_mutex_t plein = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t ecriture = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t vide = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lecture = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t varNb = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutexNb = PTHREAD_MUTEX_INITIALIZER;
 
-void* put(void * v){
-    //Un seul thread peut écrire à la fois dans le tampon
-    pthread_mutex_lock(&ecriture);
-    
-    //Si le nombre d'élément est égale à la taille du tampon, on attends
-    if(nbElements == MAX){
-        printf("Tampon plein\n");
-        pthread_cond_wait(&produirePossible, &plein);
-    }
-    
-    //On met la valeur dans le tampon
-    tamp[posEcriture] = 4;
-    printf("Ecriture \n");
-    //On change la valeur de la position d'écriture
-    if(posEcriture < MAX - 1)   posEcriture++;
-    else    posEcriture = 0;
-    
-    //sleep (1);
-    
-    pthread_mutex_lock(&varNb);
-    nbElements++;
-    pthread_mutex_unlock(&varNb);
-    
-    if(nbElements == 1){
-       // printf("broadcast\n");
-        pthread_cond_broadcast(&consommerPossible);
-    }
-    //On débloque écriture pour permettre à un autre thread d'écrire
+pthread_mutex_t bloqLecture = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t bloqEcriture = PTHREAD_MUTEX_INITIALIZER;
+
+//Entête des fonctions
+void messageInitiale(void);
+void* put(int v);
+void* get(void);
+void creerThreadGet(int nb);
+void afficheState(void);
+void creerThreadPut(int nb, int val);
+
+int main(int argc, char* argv[]){
+    char chaine[20];
+    char typeOp;
+    int nbProc;
+    int val;
+    int continuer = 1;
+    //On s'assure que les mutex soit débloqué
+    pthread_mutex_unlock(&mutexNb);
+    pthread_mutex_unlock(&lecture);
     pthread_mutex_unlock(&ecriture);
+    pthread_mutex_unlock(&bloqLecture);
+    pthread_mutex_unlock(&bloqEcriture);
+    
+    //On affiche les infos de départ
+    messageInitiale();
+
+    while(continuer){
+        printf("--> ");
+        //On réinit les valeurs
+        typeOp = 'Z';
+        nbProc = 0;
+        val = 0;
+        //On récupère l'entrée
+        fgets(chaine, sizeof(chaine), stdin);
+        //On parse la chaine
+        sscanf(chaine,"%c %d %d", &typeOp, &nbProc, &val);
+        
+        switch (typeOp) {
+            case 'Q': continuer = 0;//On arrête le programme
+                break;
+            case 'G': if(nbProc > 0) creerThreadGet(nbProc);
+                break;
+            case 'P': if(nbProc > 0) creerThreadPut(nbProc, val);
+                break;
+            case 'S': afficheState();
+                break;
+            default: printf("Erreur de saisi, veuillez réessayer \n");
+                break;
+        }
+    }
+    
+    return 0;
+}
+
+void messageInitiale(){
+    printf("------ Bienvenue dans le mini interpréteur ------\n");
+    printf("Créer un processus get : G nombre_de_threads\n");
+    printf("Créer un processus put : P nombre_de_threads valeur_à_insérer\n");
+    printf("État du système : S\n");
+    printf("Quitter le programme : Q\n");
+}
+
+void afficheState(){
+    pthread_mutex_lock(&bloqEcriture);
+    pthread_mutex_lock(&bloqLecture);
+    pthread_mutex_lock(&ecriture);
+    pthread_mutex_lock(&lecture);
+    pthread_mutex_lock(&mutexNb);
+
+    printf("%d threads en lecture\n", enLecture);
+    printf("%d threads en Ecriture\n", enEcriture);
+    for(int i = 0; i < MAX; i++){
+        printf("%d ", tamp[i]);
+    }
+    printf("\n");
+    pthread_mutex_unlock(&bloqEcriture);
+    pthread_mutex_unlock(&bloqLecture);
+    pthread_mutex_unlock(&ecriture);
+    pthread_mutex_unlock(&lecture);
+    pthread_mutex_unlock(&mutexNb);
+}
+
+void creerThreadGet(int nb){
+    pthread_t thread[nb];
+    
+    for(int i = 0; i < nb; i++){
+        pthread_create(&thread[i], NULL, get, NULL);
+    }
+    printf("%d thread(s) get créé(s)\n", nb);
+}
+
+void creerThreadPut(int nb, int val){
+    pthread_t thread[nb];
+    
+    for(int i = 0; i < nb; i++){
+        pthread_create(&thread[i], NULL, put, val);
+    }
+    printf("%d thread(s) put créé(s)\n", nb);
+}
+
+void* put(int v){
+    pthread_mutex_lock(&bloqEcriture);
+    enEcriture ++;
+    pthread_mutex_unlock(&bloqEcriture);
+    
+    //Pour qu'un seul thread écrive à la fois
+    pthread_mutex_lock(&ecriture);
+    //On bloque l'accès à nbElements
+    pthread_mutex_lock(&mutexNb);
+    
+    //On regarde la valeur de nbElements
+    if(nbElements == MAX){
+        //printf("tampon Plein\n");
+        //On libère l'accès à nbElement
+        pthread_mutex_unlock(&mutexNb);
+        //On attend qu'une place se libère dans le tampon
+        pthread_cond_wait(&produirePossible, &ecriture);
+        //On rebloque l'accès à nbElement
+        pthread_mutex_lock(&mutexNb);
+    }
+    //On écrit la valeur dans le tampon
+    tamp[posEcriture] = v;
+   // printf("Ecriture %d\n", nbElements);
+    //On modifie la valeur de la position ou écrire
+    if(posEcriture < MAX - 1){
+        posEcriture ++;
+    }else{
+        posEcriture = 0;
+    }
+    
+    //Si le nbElement vaut 0 on broadcast pour la lecture
+    if(nbElements == 0)
+        pthread_cond_broadcast(&consommerPossible);
+    
+    nbElements++;
+    //On débloque l'accès à l'écriture et au nb d'éléments
+    pthread_mutex_unlock(&mutexNb);
+    pthread_mutex_unlock(&ecriture);
+    
+    pthread_mutex_lock(&bloqEcriture);
+    enEcriture--;
+    pthread_mutex_unlock(&bloqEcriture);
     pthread_exit(NULL);
 }
 
 void* get(){
-    //Un seul thread peut lire à la fois dans le tampon
-    pthread_mutex_lock(&lecture);
+    pthread_mutex_lock(&bloqLecture);
+    enLecture++;
+    pthread_mutex_unlock(&bloqLecture);
     
-    //Si le nombre d'élément est égale à la taille du tampon, on attends
+    //Pour qu'un seul thread lise à la fois
+    pthread_mutex_lock(&lecture);
+    //On bloque l'accès à nbElements
+    pthread_mutex_lock(&mutexNb);
+    
+    //On regarde la valeur de nbElements
     if(nbElements == 0){
-        printf("Tampon vide\n");
-        pthread_cond_wait(&consommerPossible, &vide);
+        //printf("tampon vide\n");
+        //On libère l'accès à nbElement
+        pthread_mutex_unlock(&mutexNb);
+        //On attend qu'une place se libère dans le tampon
+        pthread_cond_wait(&consommerPossible, &lecture);
+        //On rebloque l'accès à nbElement
+        pthread_mutex_lock(&mutexNb);
     }
-    printf("Lecture\n");
-    //On change la valeur de la position de lecture
+    
+    //On modifie la valeur de la position ou écrire
+    tamp[posLecture] = -1;
     if(posLecture < MAX - 1)
         posLecture++;
     else
         posLecture = 0;
     
-    //sleep (1);
-    
-    pthread_mutex_lock(&varNb);
-    nbElements--;
-    pthread_mutex_unlock(&varNb);
-    if(nbElements == (MAX - 1)){
-       // printf("broadcast\n");
+    //printf("Lecture\n");
+    //Si le nbElement vaut 0 on broadcast pour l'écriture
+    if(nbElements == MAX)
         pthread_cond_broadcast(&produirePossible);
-    }
-    //On débloque lecture pour permettre à un autre thread de lire
+    
+    nbElements--;
+    //On débloque l'accès à la lecture et au nb d'éléments
+    pthread_mutex_unlock(&mutexNb);
     pthread_mutex_unlock(&lecture);
     
+    pthread_mutex_lock(&bloqLecture);
+    enLecture--;
+    pthread_mutex_unlock(&bloqLecture);
     pthread_exit(NULL);
 }
-
-int main(int argc, char* argv[]){
-    int booleen = 1;
-    pthread_mutex_unlock(&lecture);
-    pthread_mutex_unlock(&ecriture);
-    pthread_mutex_unlock(&plein);
-    pthread_mutex_unlock(&vide);
-    pthread_mutex_unlock(&varNb);
-    
-    pthread_t treahd[NBTEST];
-    
-    //pthread_attr_t attribut[NBTEST];a
-    int a = 25;
-    for(int i = 0; i < NBTEST; i++){
-        if(booleen){
-            //pthread_attr_init(&attribut[i]);
-            pthread_create(&treahd[i], NULL, put, (void*)&a);
-            sleep(0.5);
-            if(booleen == 1) booleen++;
-            else booleen = 0;
-        }else{
-            //pthread_attr_init(&attribut[i]);
-            pthread_create(&treahd[i], NULL, get, NULL);
-            sleep(0.5);
-            booleen = 1;
-        }
-        
-    }
-    
-    //On attend la fermeture de tous les threads avant de fermer
-    for(int i = 0; i < 25; i++){
-        pthread_join(treahd[i],NULL);
-    }
-    return 0;
-}
-
-
 
 
 
