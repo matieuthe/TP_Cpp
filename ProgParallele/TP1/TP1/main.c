@@ -7,7 +7,6 @@
 
 //Commande pour compiler
 //gcc tp1.c -o tp1 -lpthread
-//http://forum.hardware.fr/hfr/Programmation/C/probleme-producteur-consommateur-sujet_143077_1.htm
 
 int tamp[MAX];
 int nbElements = 0; //nb element dans le tampon
