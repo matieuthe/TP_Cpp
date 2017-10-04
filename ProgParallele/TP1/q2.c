@@ -1,80 +1,125 @@
 #include <stdio.h>   /* standard I/O routines */
 #include <pthread.h> /* pthread functions and data structures */
 #include <unistd.h>
+#include <stdlib.h>
 
 #define SIZE_TAMP 10 //Taille tu tampon
 
 int tampon[SIZE_TAMP][2];
-int posLecture = 0;
-int posEcriture = 0;
+
+int trame = 1;
 
 pthread_mutex_t mutStatut[SIZE_TAMP];
 
-pthread_mutex_t mutexNb = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t mutexPosLect = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t mutexPosEcrit = PTHREAD_MUTEX_INITIALIZER;
-
 pthread_mutex_t mutLire = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutEcrire = PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t mutRech = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t peutLire = PTHREAD_COND_INITIALIZER;
 
-void ecrire();
-void lire();
+void* ecrire();
+void* lire();
 void init();
 
 int main(int argc, char* argv[]){
 	init();
+	int nb = 200;
+	pthread_t thread[nb];
+	int choix = 1;
 	
+	for(int i = 0; i < nb; i++){
+		if(choix){
+			pthread_create(&thread[i], NULL, ecrire, NULL);
+			choix = 0;
+		}
+		else{
+			pthread_create(&thread[i], NULL, lire, NULL);
+			choix = 1;
+		}
+    }
 	exit(0);
 }
 
-void ecrire(){
+void* ecrire(){
 	//Pour être tout seul à écrire
 	pthread_mutex_lock(&mutEcrire);
-	int continuer = 1;
-	while(continuer){
-		pthread_mutex_lock(&mutStatut[posEcriture]);
-		
-		if(tampon[posEcriture] == 0) continuer = 0;
-		else if(tampon[posEcriture] == 1){ //Non Lue
-			
-		}else{
-		
-		}	
-		pthread_mutex_unlock(&mutStatut[posEcriture]);
+	pthread_mutex_lock(&mutRech);
+	
+	int posMin = -1;
+	int min = -1;
+	//On cherche la position du plus vieux ou une case vide
+	for(int i = 0; i < SIZE_TAMP; i++){
+		pthread_mutex_lock(&mutStatut[i]);
+		if(tampon[i][0] == 0){
+			posMin = i;
+			i = SIZE_TAMP;
+		}else if(tampon[i][0] == 1 && min < tampon[i][1]){
+			posMin = i;
+			min = tampon[i][1];
+		}
+		pthread_mutex_unlock(&mutStatut[i]);
 	}
+	pthread_mutex_unlock(&mutRech);
 
+	//On ecrit à la position i
+	//Bloque l'accès au statut de l'élément à lire
+	pthread_mutex_lock(&mutStatut[posMin]);
+	tampon[posMin][0] = 0; //On passe le statut à rien à lire
+	pthread_mutex_unlock(&mutStatut[posMin]);
+	
+	tampon[posMin][1] = trame++;
+	
+	//Bloque l'accès au statut de l'élément à lire
+	pthread_mutex_lock(&mutStatut[posMin]);
+	tampon[posMin][0] = 1; //On passe le statut à non lu
+	pthread_mutex_unlock(&mutStatut[posMin]);
+	
+	pthread_cond_broadcast(&peutLire);
+	//On debloque l'ecriture
 	pthread_mutex_unlock(&mutEcrire);
+	pthread_exit(NULL);
 }
 
-void lire(){
+void* lire(){
 	//Pour être tout seul à lire
 	pthread_mutex_lock(&mutLire);
 	
-	//Bloque l'accès au statut de l'élément courant en lecture
-	pthread_mutex_lock(&mutStatut[posLecture]);
-	
-	if(tampon[posLecture][0] == 0){
-		pthread_mutex_unlock(&mutexNb);
-		pthread_cond_wait(&peutLire, &mutLire);
-			pthread_mutex_lock(&mutStatut[posLecture]);
+	int posMin = -1;
+	int min = -1;
+	int continuer = 1;
+	while(continuer){
+		pthread_mutex_lock(&mutRech);
+		//On cherche la position du plus vieux
+		for(int i = 0; i < SIZE_TAMP; i++){
+			pthread_mutex_lock(&mutStatut[i]);
+		
+			if(tampon[i][0] == 1 && min < tampon[i][1]){
+				posMin = i;
+				min = tampon[i][1];
+			}
+			pthread_mutex_unlock(&mutStatut[i]);
+		}
+		pthread_mutex_unlock(&mutRech);
+		
+		if(posMin == -1)  pthread_cond_wait(&peutLire, &mutLire);
+		else continuer = 0;
 	}
 	
-	tampon[posLecture][0] = 2; // 2 => en cours de lecture 
-	pthread_mutex_unlock(&mutStatut[posLecture]);
 	
-	tampon[posLecture][1] = -1; // On met la valeur de la trame à -1
+	//Bloque l'accès au statut de l'élément à lire
+	pthread_mutex_lock(&mutStatut[posMin]);
+	tampon[posMin][0] = 2; //On passe le statut à en cours de lecture
+	pthread_mutex_unlock(&mutStatut[posMin]);
 	
-	//On rebloque l'accès au statut
-	pthread_mutex_lock(&mutStatut[posLecture]);
-	tampon[posLecture][0] = 0; // 0 => Lue 
-	pthread_mutex_unlock(&mutStatut[posLecture]);
+	//On lit la valeur
+	printf("%d\n", posMin);
+	sleep(0.5);
 	
-	//On modifie la position de lecture pour le thread suivant
-	if(posLecture == (SIZE_TAMP - 1)) posLecture = 0;
-	else posLecture++;
+	//Bloque l'accès au statut de l'élément à lire
+	pthread_mutex_lock(&mutStatut[posMin]);
+	tampon[posMin][0] = 0; //On passe le statut à lu
+	pthread_mutex_unlock(&mutStatut[posMin]);
 	
+	//On débloque l'accès en lecture
 	pthread_mutex_unlock(&mutLire);
 	pthread_exit(NULL);
 }
@@ -82,12 +127,17 @@ void lire(){
 void init(){
 	int i;
 	for(i = 0; i < SIZE_TAMP; i++) tampon[i][0] = 0; //Etat lue
-	
-	//On debloque bien les mutex
-	pthread_mutex_unlock(&mutexNb);
-	pthread_mutex_unlock(&mutexPosLect);
-	pthread_mutex_unlock(&mutexPosEcrit);
+	pthread_mutex_unlock(&mutLire);
+	pthread_mutex_unlock(&mutEcrire);
+	pthread_mutex_unlock(&mutRech);
 	pthread_mutex_unlock(&mutLire);
 	
-	for(i = 0; i < SIZE_TAMP; i++) mutStatut[i] = PTHREAD_MUTEX_INITIALIZER;
+	for(i = 0; i < SIZE_TAMP; i++){
+		pthread_mutex_unlock(&mutStatut[i]);
+	}	
+
 }
+
+
+
+
